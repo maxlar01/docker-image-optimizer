@@ -23,7 +23,7 @@ Built an automated Docker Image Optimization pipeline that reduced image sizes b
 
 | Component | Description |
 |-----------|-------------|
-| 🔍 **Dockerfile Analyzer** | Static analysis with 12+ built-in rules detecting anti-patterns and inefficiencies |
+| 🔍 **Dockerfile Analyzer** | Static analysis with 12+ built-in rules (+ Hadolint if installed) detecting anti-patterns and inefficiencies |
 | ⚡ **Optimizer Engine** | 7 optimization strategies including base image switching, multi-stage builds, layer combining |
 | 🔒 **Security Scanner** | Trivy/Grype integration for CVE detection |
 | 📋 **Policy Enforcer** | YAML-defined rules for image size, CVE limits, non-root requirements |
