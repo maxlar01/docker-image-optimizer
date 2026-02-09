@@ -91,6 +91,8 @@ dio analyze Dockerfile
 dio analyze Dockerfile --format json
 ```
 
+[Hadolint](https://github.com/hadolint/hadolint) will be used in addition to the static analysis if it is installed and located in PATH.
+
 ### `dio optimize`
 
 Analyzes and optimizes Dockerfiles using 7 strategies:

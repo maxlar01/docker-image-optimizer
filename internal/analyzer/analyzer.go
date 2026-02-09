@@ -4,9 +4,11 @@
 package analyzer
 
 import (
-	"bufio"
+	"bytes"
+	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -16,12 +18,25 @@ import (
 
 // Analyzer performs static analysis on Dockerfiles.
 type Analyzer struct {
-	rules []Rule
+	rules       []Rule
+	useHadolint bool
 }
 
 // New creates a new Analyzer with all built-in rules registered.
+// Hadolint integration is enabled automatically if the binary is found in PATH.
 func New() *Analyzer {
-	a := &Analyzer{}
+	a := &Analyzer{
+		useHadolint: isHadolintAvailable(),
+	}
+	a.rules = DefaultRules()
+	return a
+}
+
+// NewWithOptions creates a new Analyzer with explicit configuration.
+func NewWithOptions(enableHadolint bool) *Analyzer {
+	a := &Analyzer{
+		useHadolint: enableHadolint && isHadolintAvailable(),
+	}
 	a.rules = DefaultRules()
 	return a
 }
@@ -51,6 +66,15 @@ func (a *Analyzer) Analyze(dockerfilePath string) (*models.AnalysisResult, error
 	for _, rule := range a.rules {
 		ruleIssues := rule.Check(ctx)
 		issues = append(issues, ruleIssues...)
+	}
+
+	// Run hadolint if available and merge results
+	if a.useHadolint {
+		hadolintIssues, err := RunHadolint(dockerfilePath)
+		if err == nil {
+			issues = mergeHadolintIssues(issues, hadolintIssues)
+		}
+		// Silently ignore hadolint errors — built-in rules still apply
 	}
 
 	score := calculateScore(issues)
@@ -89,18 +113,18 @@ func (a *Analyzer) AnalyzeContent(content string) (*models.AnalysisResult, error
 
 // AnalysisContext provides parsed Dockerfile information to rules.
 type AnalysisContext struct {
-	FilePath             string
-	Content              string
-	Lines                []string
-	ParsedFile           *ParsedDockerfile
-	MissingDockerignore  bool
+	FilePath            string
+	Content             string
+	Lines               []string
+	ParsedFile          *ParsedDockerfile
+	MissingDockerignore bool
 }
 
 // ParsedDockerfile holds a structured representation of a Dockerfile.
 type ParsedDockerfile struct {
-	Stages       []Stage
-	Instructions []Instruction
-	BaseImages   []string
+	Stages        []Stage
+	Instructions  []Instruction
+	BaseImages    []string
 	HasMultiStage bool
 }
 
@@ -114,10 +138,10 @@ type Stage struct {
 
 // Instruction represents a single Dockerfile instruction.
 type Instruction struct {
-	Command   string
-	Args      string
-	Line      int
-	Raw       string
+	Command string
+	Args    string
+	Line    int
+	Raw     string
 }
 
 // parseDockerfile does a lightweight parse of Dockerfile instructions.
@@ -226,36 +250,123 @@ func calculateScore(issues []models.Issue) int {
 	return score
 }
 
-// RunHadolint invokes hadolint (if available) and parses its output.
+// hadolintResult represents a single result from hadolint's JSON output.
+type hadolintResult struct {
+	Line    int    `json:"line"`
+	Code    string `json:"code"`
+	Message string `json:"message"`
+	Column  int    `json:"column"`
+	File    string `json:"file"`
+	Level   string `json:"level"` // error, warning, info, style
+}
+
+// isHadolintAvailable checks whether hadolint is installed and on PATH.
+func isHadolintAvailable() bool {
+	_, err := exec.LookPath("hadolint")
+	return err == nil
+}
+
+// RunHadolint invokes hadolint and parses its JSON output into DIO issues.
 func RunHadolint(dockerfilePath string) ([]models.Issue, error) {
-	// Check if hadolint is available
-	if _, err := findExecutable("hadolint"); err != nil {
+	hadolintPath, err := exec.LookPath("hadolint")
+	if err != nil {
 		return nil, fmt.Errorf("hadolint not found: %w", err)
 	}
 
-	// This would shell out to hadolint - for now, return empty
-	// In production, use os/exec to run: hadolint --format json <path>
-	return nil, nil
+	var stdout, stderr bytes.Buffer
+	cmd := exec.Command(hadolintPath, "--format", "json", "--no-fail", dockerfilePath)
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+
+	// hadolint returns exit code 1 when it finds issues, which is expected.
+	_ = cmd.Run()
+
+	// If no output, nothing to parse
+	if stdout.Len() == 0 {
+		return nil, nil
+	}
+
+	var results []hadolintResult
+	if err := json.Unmarshal(stdout.Bytes(), &results); err != nil {
+		return nil, fmt.Errorf("failed to parse hadolint output: %w", err)
+	}
+
+	var issues []models.Issue
+	for _, r := range results {
+		issues = append(issues, models.Issue{
+			ID:          "HL-" + r.Code,
+			Severity:    mapHadolintLevel(r.Level),
+			Category:    "hadolint",
+			Title:       r.Code + ": " + truncate(r.Message, 80),
+			Description: r.Message,
+			Line:        r.Line,
+			AutoFixable: false,
+		})
+	}
+
+	return issues, nil
 }
 
-func findExecutable(name string) (string, error) {
-	scanner := bufio.NewScanner(strings.NewReader(os.Getenv("PATH")))
-	scanner.Split(func(data []byte, atEOF bool) (advance int, token []byte, err error) {
-		for i := 0; i < len(data); i++ {
-			if data[i] == ':' {
-				return i + 1, data[:i], nil
+// mapHadolintLevel converts hadolint severity levels to DIO severity.
+func mapHadolintLevel(level string) models.Severity {
+	switch strings.ToLower(level) {
+	case "error":
+		return models.SeverityHigh
+	case "warning":
+		return models.SeverityMedium
+	case "info":
+		return models.SeverityLow
+	case "style":
+		return models.SeverityInfo
+	default:
+		return models.SeverityLow
+	}
+}
+
+// mergeHadolintIssues appends hadolint issues, skipping any that overlap with
+// existing DIO issues on the same line with equivalent meaning.
+func mergeHadolintIssues(dioIssues, hadolintIssues []models.Issue) []models.Issue {
+	// Build a set of lines already flagged by built-in rules
+	coveredLines := make(map[int]map[string]bool)
+	for _, issue := range dioIssues {
+		if issue.Line > 0 {
+			if coveredLines[issue.Line] == nil {
+				coveredLines[issue.Line] = make(map[string]bool)
 			}
-		}
-		if atEOF && len(data) > 0 {
-			return len(data), data, nil
-		}
-		return 0, nil, nil
-	})
-	for scanner.Scan() {
-		path := filepath.Join(scanner.Text(), name)
-		if info, err := os.Stat(path); err == nil && !info.IsDir() {
-			return path, nil
+			coveredLines[issue.Line][issue.Category] = true
 		}
 	}
-	return "", fmt.Errorf("%s not found in PATH", name)
+
+	// Known overlaps: hadolint rules that duplicate built-in DIO rules
+	hadolintToDIOCategory := map[string]string{
+		"DL3007": "base-image",      // Using latest tag
+		"DL3008": "version-pinning", // Pin versions in apt-get
+		"DL3009": "cleanup",         // Delete apt-get lists
+		"DL3015": "apt-get",         // --no-install-recommends
+		"DL3025": "best-practice",   // Use JSON for CMD
+		"DL3020": "best-practice",   // Use COPY instead of ADD
+	}
+
+	for _, hlIssue := range hadolintIssues {
+		// Extract the hadolint rule code from ID ("HL-DL3007" -> "DL3007")
+		code := strings.TrimPrefix(hlIssue.ID, "HL-")
+
+		// Skip if a built-in DIO rule already covers this line+category
+		if dioCategory, ok := hadolintToDIOCategory[code]; ok {
+			if cats, exists := coveredLines[hlIssue.Line]; exists && cats[dioCategory] {
+				continue
+			}
+		}
+
+		dioIssues = append(dioIssues, hlIssue)
+	}
+
+	return dioIssues
+}
+
+func truncate(s string, maxLen int) string {
+	if len(s) <= maxLen {
+		return s
+	}
+	return s[:maxLen-3] + "..."
 }

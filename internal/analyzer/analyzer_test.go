@@ -3,6 +3,8 @@ package analyzer
 import (
 	"strings"
 	"testing"
+
+	"github.com/maxlar/docker-image-optimizer/internal/models"
 )
 
 func TestAnalyzeContent_LatestTag(t *testing.T) {
@@ -180,5 +182,79 @@ CMD ["index.js"]
 	}
 	if pdf.BaseImages[0] != "node:20-alpine" {
 		t.Errorf("expected base image 'node:20-alpine', got '%s'", pdf.BaseImages[0])
+	}
+}
+
+func TestMapHadolintLevel(t *testing.T) {
+	tests := []struct {
+		level    string
+		expected string
+	}{
+		{"error", "high"},
+		{"warning", "medium"},
+		{"info", "low"},
+		{"style", "info"},
+		{"unknown", "low"},
+	}
+	for _, tt := range tests {
+		got := mapHadolintLevel(tt.level)
+		if string(got) != tt.expected {
+			t.Errorf("mapHadolintLevel(%q) = %q, want %q", tt.level, got, tt.expected)
+		}
+	}
+}
+
+func TestMergeHadolintIssues_Dedup(t *testing.T) {
+	dioIssues := []models.Issue{
+		{ID: "DIO001", Line: 1, Category: "base-image", Title: "Unpinned tag"},
+	}
+	hadolintIssues := []models.Issue{
+		{ID: "HL-DL3007", Line: 1, Category: "hadolint", Title: "DL3007: Using latest is prone to errors"},
+		{ID: "HL-DL3042", Line: 5, Category: "hadolint", Title: "DL3042: Avoid cache directory"},
+	}
+	merged := mergeHadolintIssues(dioIssues, hadolintIssues)
+
+	// DL3007 on line 1 should be deduplicated (DIO001 already covers base-image on line 1)
+	// DL3042 on line 5 should be kept
+	if len(merged) != 2 {
+		t.Errorf("expected 2 merged issues, got %d", len(merged))
+		for _, i := range merged {
+			t.Logf("  %s line=%d cat=%s", i.ID, i.Line, i.Category)
+		}
+	}
+}
+
+func TestMergeHadolintIssues_NoOverlap(t *testing.T) {
+	dioIssues := []models.Issue{
+		{ID: "DIO006", Line: 5, Category: "security", Title: "Root user"},
+	}
+	hadolintIssues := []models.Issue{
+		{ID: "HL-DL3007", Line: 1, Category: "hadolint", Title: "Using latest"},
+	}
+	merged := mergeHadolintIssues(dioIssues, hadolintIssues)
+
+	if len(merged) != 2 {
+		t.Errorf("expected 2 issues (no overlap), got %d", len(merged))
+	}
+}
+
+func TestTruncate(t *testing.T) {
+	if got := truncate("short", 80); got != "short" {
+		t.Errorf("expected 'short', got %q", got)
+	}
+	long := strings.Repeat("a", 100)
+	got := truncate(long, 20)
+	if len(got) != 20 {
+		t.Errorf("expected length 20, got %d", len(got))
+	}
+	if !strings.HasSuffix(got, "...") {
+		t.Error("expected truncated string to end with ...")
+	}
+}
+
+func TestNewWithOptions_HadolintDisabled(t *testing.T) {
+	a := NewWithOptions(false)
+	if a.useHadolint {
+		t.Error("expected hadolint to be disabled")
 	}
 }
