@@ -8,16 +8,19 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/fatih/color"
 	"github.com/spf13/cobra"
 
 	"github.com/maxlar/docker-image-optimizer/internal/analyzer"
+	"github.com/maxlar/docker-image-optimizer/internal/builder"
 	"github.com/maxlar/docker-image-optimizer/internal/models"
 	"github.com/maxlar/docker-image-optimizer/internal/optimizer"
 	"github.com/maxlar/docker-image-optimizer/internal/policy"
 	"github.com/maxlar/docker-image-optimizer/internal/reporter"
+	"github.com/maxlar/docker-image-optimizer/internal/scanner"
 )
 
 var (
@@ -390,19 +393,95 @@ func runPipeline(dockerfilePath, mode, policyFile, outputDir string, skipScan, s
 	}
 	fmt.Println()
 
-	// Step 3: Build (optional)
+	// Step 3: Build
 	if !skipBuild {
 		bold.Println("Step 3/5: 🏗️  Building images...")
-		fmt.Println("  ⚠ Skipped (use with Docker environment)")
+		b, err := builder.New()
+		if err != nil {
+			fmt.Printf("  ⚠ Cannot build: %v\n\n", err)
+		} else {
+			// Derive an image tag from the Dockerfile path
+			baseName := strings.TrimSuffix(filepath.Base(dockerfilePath), filepath.Ext(dockerfilePath))
+			baseTag := fmt.Sprintf("dio-%s:baseline", strings.ToLower(baseName))
+
+			baseline, err := b.BuildBaseline(dockerfilePath, baseTag)
+			if err != nil {
+				fmt.Printf("  ⚠ Baseline build failed: %v\n", err)
+			} else {
+				result.BaselineImage = baseline
+				fmt.Printf("  Baseline: %s (%s, %d layers, built in %.1fs)\n",
+					baseline.ImageName, baseline.SizeHuman, baseline.Layers, baseline.BuildTime)
+			}
+
+			// Build optimized image if autofix produced a different Dockerfile
+			if optMode == optimizer.ModeAutoFix && optResult.OptimizedDockerfile != optResult.OriginalDockerfile {
+				optTag := fmt.Sprintf("dio-%s:optimized", strings.ToLower(baseName))
+				contextDir := filepath.Dir(dockerfilePath)
+				optPath := filepath.Join(contextDir, "Dockerfile.optimized")
+
+				optimized, err := b.BuildOptimized(optPath, contextDir, optTag)
+				if err != nil {
+					fmt.Printf("  ⚠ Optimized build failed: %v\n", err)
+				} else {
+					result.OptimizedImage = optimized
+					fmt.Printf("  Optimized: %s (%s, %d layers, built in %.1fs)\n",
+						optimized.ImageName, optimized.SizeHuman, optimized.Layers, optimized.BuildTime)
+
+					// Generate comparison
+					if result.BaselineImage != nil {
+						result.Comparison = b.Compare(result.BaselineImage, optimized)
+						fmt.Printf("  Size reduction: %.1f%%\n", result.Comparison.SizePct)
+					}
+				}
+			}
+		}
 	} else {
 		bold.Println("Step 3/5: 🏗️  Building images... (skipped)")
 	}
 	fmt.Println()
 
-	// Step 4: Security scan (optional)
+	// Step 4: Security scan
 	if !skipScan {
 		bold.Println("Step 4/5: 🔒 Security scanning...")
-		fmt.Println("  ⚠ Skipped (requires trivy or grype)")
+		sc, err := scanner.New()
+		if err != nil {
+			fmt.Printf("  ⚠ Cannot scan: %v\n", err)
+		} else {
+			// Scan baseline image
+			if result.BaselineImage != nil {
+				scanRes, err := sc.Scan(result.BaselineImage.ImageName)
+				if err != nil {
+					fmt.Printf("  ⚠ Baseline scan failed: %v\n", err)
+				} else {
+					result.ScanResult = scanRes
+					fmt.Printf("  Baseline: %d critical, %d high, %d medium, %d low\n",
+						scanRes.CriticalCount, scanRes.HighCount, scanRes.MediumCount, scanRes.LowCount)
+				}
+			}
+
+			// Scan optimized image
+			if result.OptimizedImage != nil {
+				optScanRes, err := sc.Scan(result.OptimizedImage.ImageName)
+				if err != nil {
+					fmt.Printf("  ⚠ Optimized scan failed: %v\n", err)
+				} else {
+					result.OptScanResult = optScanRes
+					fmt.Printf("  Optimized: %d critical, %d high, %d medium, %d low\n",
+						optScanRes.CriticalCount, optScanRes.HighCount, optScanRes.MediumCount, optScanRes.LowCount)
+				}
+
+				// Update CVE diff in comparison
+				if result.Comparison != nil && result.ScanResult != nil {
+					baseTotal := result.ScanResult.CriticalCount + result.ScanResult.HighCount
+					optTotal := optScanRes.CriticalCount + optScanRes.HighCount
+					result.Comparison.CVEDiff = baseTotal - optTotal
+				}
+			}
+
+			if result.BaselineImage == nil && result.OptimizedImage == nil {
+				fmt.Println("  ⚠ No images to scan (build step was skipped)")
+			}
+		}
 	} else {
 		bold.Println("Step 4/5: 🔒 Security scanning... (skipped)")
 	}

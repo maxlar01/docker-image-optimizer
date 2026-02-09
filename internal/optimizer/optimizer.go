@@ -134,9 +134,7 @@ func estimateReduction(optimizations []models.Optimization) string {
 			}
 		}
 	}
-	if totalImpact > 85 {
-		totalImpact = 85
-	}
+
 	if totalImpact == 0 {
 		return "N/A (suggest mode)"
 	}
