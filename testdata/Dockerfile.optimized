@@ -1,9 +1,8 @@
-# This is an example of a well-optimized Dockerfile.
-
+# Stage 1: Build
 FROM node:20-alpine AS builder
 WORKDIR /app
 
-# Copy dependency files first for better cache utilization
+# Copy dependency files first for better caching
 COPY package*.json ./
 RUN npm ci --only=production
 
@@ -11,20 +10,19 @@ RUN npm ci --only=production
 COPY . .
 RUN npm run build
 
-# Production stage — minimal runtime image
-FROM gcr.io/distroless/nodejs20-debian12
+# Stage 2: Production
+FROM node:20-alpine AS production
 WORKDIR /app
 
-# Copy only built artifacts
+# Copy built artifacts
 COPY --from=builder /app/dist ./dist
 COPY --from=builder /app/node_modules ./node_modules
 COPY --from=builder /app/package.json ./
 
-# Run as non-root
-USER nonroot
-
-HEALTHCHECK --interval=30s --timeout=3s \
-  CMD ["node", "-e", "require('http').get('http://localhost:3000/health', (r) => { process.exit(r.statusCode === 200 ? 0 : 1) })"]
+# Security: run as non-root
+RUN addgroup --system --gid 1001 nodejs && \
+    adduser --system --uid 1001 --ingroup nodejs nextjs
+USER nextjs
 
 EXPOSE 3000
-CMD ["dist/index.js"]
+CMD ["node", "dist/index.js"]

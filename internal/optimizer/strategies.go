@@ -24,23 +24,23 @@ func (s *BaseImageStrategy) Name() string { return "base-image-optimization" }
 
 // slimAlternatives maps large base images to smaller alternatives.
 var slimAlternatives = map[string]string{
-	"ubuntu":        "ubuntu:22.04",  // at least pin version
-	"debian":        "debian:bookworm-slim",
-	"node":          "node:lts-alpine",
-	"python":        "python:3.12-slim",
-	"golang":        "golang:1.22-alpine",
-	"ruby":          "ruby:3.3-alpine",
-	"php":           "php:8.3-alpine",
-	"java":          "eclipse-temurin:21-jre-alpine",
-	"openjdk":       "eclipse-temurin:21-jre-alpine",
-	"nginx":         "nginx:alpine",
-	"httpd":         "httpd:alpine",
-	"postgres":      "postgres:16-alpine",
-	"mysql":         "mysql:8.0",
-	"redis":         "redis:alpine",
-	"mongo":         "mongo:7.0",
-	"centos":        "debian:bookworm-slim",
-	"fedora":        "debian:bookworm-slim",
+	"ubuntu":         "ubuntu:22.04", // at least pin version
+	"debian":         "debian:bookworm-slim",
+	"node":           "node:lts-alpine",
+	"python":         "python:3.12-slim",
+	"golang":         "golang:1.22-alpine",
+	"ruby":           "ruby:3.3-alpine",
+	"php":            "php:8.3-alpine",
+	"java":           "eclipse-temurin:21-jre-alpine",
+	"openjdk":        "eclipse-temurin:21-jre-alpine",
+	"nginx":          "nginx:alpine",
+	"httpd":          "httpd:alpine",
+	"postgres":       "postgres:16-alpine",
+	"mysql":          "mysql:8.0",
+	"redis":          "redis:alpine",
+	"mongo":          "mongo:7.0",
+	"centos":         "debian:bookworm-slim",
+	"fedora":         "debian:bookworm-slim",
 	"amazoncorretto": "amazoncorretto:21-alpine",
 }
 
@@ -80,6 +80,7 @@ func (s *BaseImageStrategy) Analyze(ctx *OptimizationContext) *models.Optimizati
 				Description: fmt.Sprintf("Replace '%s' with '%s' for a significantly smaller image.", baseImage, alt),
 				Impact:      "50-80% size reduction",
 				Priority:    1,
+				AutoFixable: true,
 			}
 		}
 	}
@@ -154,6 +155,7 @@ func (s *CombineLayersStrategy) Analyze(ctx *OptimizationContext) *models.Optimi
 			Description: "Multiple consecutive RUN commands can be merged to reduce layers.",
 			Impact:      "10-20% size reduction",
 			Priority:    3,
+			AutoFixable: true,
 		}
 	}
 	return nil
@@ -242,6 +244,7 @@ func (s *MultiStageStrategy) Analyze(ctx *OptimizationContext) *models.Optimizat
 					Description: "Build commands detected. Use multi-stage builds to exclude build tools from the final image.",
 					Impact:      "40-70% size reduction",
 					Priority:    1,
+					AutoFixable: true,
 				}
 			}
 		}
@@ -330,6 +333,7 @@ func (s *NonRootUserStrategy) Analyze(ctx *OptimizationContext) *models.Optimiza
 				Description: "Container runs as root. Add a non-root user for improved security.",
 				Impact:      "Security improvement",
 				Priority:    2,
+				AutoFixable: true,
 			}
 		}
 	}
@@ -391,6 +395,7 @@ func (s *CleanupStrategy) Analyze(ctx *OptimizationContext) *models.Optimization
 				Description: "Package manager caches are not cleaned, wasting space in the final image.",
 				Impact:      "10-30% size reduction",
 				Priority:    2,
+				AutoFixable: true,
 			}
 		}
 	}
@@ -432,6 +437,7 @@ func (s *WorkdirStrategy) Analyze(ctx *OptimizationContext) *models.Optimization
 				Description: "No WORKDIR set. Files are placed in / by default.",
 				Impact:      "Best practice",
 				Priority:    4,
+				AutoFixable: true,
 			}
 		}
 	}
@@ -440,6 +446,14 @@ func (s *WorkdirStrategy) Analyze(ctx *OptimizationContext) *models.Optimization
 
 func (s *WorkdirStrategy) Apply(ctx *OptimizationContext) (string, error) {
 	lines := strings.Split(ctx.CurrentContent, "\n")
+
+	// Check if WORKDIR already exists
+	for _, line := range lines {
+		if strings.HasPrefix(strings.ToUpper(strings.TrimSpace(line)), "WORKDIR") {
+			return ctx.CurrentContent, nil
+		}
+	}
+
 	var result []string
 
 	inserted := false
