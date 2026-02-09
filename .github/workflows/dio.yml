@@ -4,7 +4,7 @@ on:
   push:
     branches: [main]
     tags:
-      - 'v*'
+      - "v*"
   pull_request:
     branches: [main]
 
@@ -115,14 +115,12 @@ jobs:
           format: "table"
           exit-code: "0"
 
-  # Release (on tags)
-  release:
-    name: Release
+  # Build release binaries (on tags)
+  build-release:
+    name: Build Release Binaries
     runs-on: ubuntu-latest
     needs: [build, analyze]
     if: startsWith(github.ref, 'refs/tags/v')
-    permissions:
-      contents: write
     strategy:
       matrix:
         goos: [linux, darwin, windows]
@@ -145,7 +143,28 @@ jobs:
           go build -ldflags="-s -w -X main.version=${{ github.ref_name }} -X main.commit=${{ github.sha }}" \
             -o "dio-${{ matrix.goos }}-${{ matrix.goarch }}${EXT}" ./cmd/dio
 
-      - name: Upload release asset
+      - name: Upload binary artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: dio-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: dio-*
+
+  # Create GitHub release (on tags)
+  release:
+    name: Create Release
+    runs-on: ubuntu-latest
+    needs: build-release
+    if: startsWith(github.ref, 'refs/tags/v')
+    permissions:
+      contents: write
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: dio-*
+          merge-multiple: true
+
+      - name: Create release
         uses: softprops/action-gh-release@v2
         with:
           files: dio-*
