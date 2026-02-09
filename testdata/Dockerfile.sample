@@ -1,0 +1,14 @@
+# This is a deliberately unoptimized Dockerfile for testing DIO.
+# It contains many common anti-patterns and issues.
+
+FROM ubuntu
+RUN apt-get update
+RUN apt-get install -y curl wget git
+RUN apt-get install -y nodejs npm
+RUN npm install -g yarn
+COPY . .
+RUN npm install
+RUN npm run build
+RUN echo "done"
+EXPOSE 3000
+CMD ["node", "dist/index.js"]

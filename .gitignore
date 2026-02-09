@@ -1,0 +1,27 @@
+# Binaries
+/bin/
+/dio
+*.exe
+
+# Go
+*.test
+*.out
+cover.out
+coverage.html
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Build artifacts
+/dist/
+/reports/
+
+# Docker
+*.tar

@@ -1,0 +1,30 @@
+# DIO Default Policy
+# These rules are enforced during the pipeline policy gate.
+# Customize these values for your project requirements.
+
+# Maximum allowed image size (supports GB, MB, KB)
+max_image_size: "500MB"
+
+# Forbid using :latest or untagged base images
+forbid_latest_tag: true
+
+# Require a non-root USER instruction
+require_non_root: true
+
+# Maximum number of critical CVEs allowed (0 = zero tolerance)
+max_critical_cves: 0
+
+# Maximum number of high CVEs allowed
+max_high_cves: 5
+
+# Require a HEALTHCHECK instruction
+require_healthcheck: false
+
+# Forbid running as root user
+forbid_root_user: true
+
+# Maximum number of layers in the final image
+max_layers: 20
+
+# Minimum Dockerfile analysis score (0-100)
+min_score: 50
